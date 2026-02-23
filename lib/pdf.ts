@@ -32,16 +32,32 @@ export async function generateRFPPdf(data: RFPForPdf): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
-  const page = doc.addPage([595, 842]);
-  const { height } = page.getSize();
-  let y = height - 60;
 
-  const draw = (text: string, x: number, size: number, bold = false, color = MUTED) => {
-    const f = bold ? fontBold : font;
-    page.drawText(text, { x, y, size, font: f, color: rgb(color.r, color.g, color.b) });
-    y -= size + 4;
+  const createPage = () => {
+    const page = doc.addPage([595, 842]);
+    const { height } = page.getSize();
+    let y = height - 60;
+
+    const draw = (text: string, x: number, size: number, bold = false, color = MUTED) => {
+      const f = bold ? fontBold : font;
+      page.drawText(text, { x, y, size, font: f, color: rgb(color.r, color.g, color.b) });
+      y -= size + 4;
+    };
+
+    return { page, height, getY: () => y, setY: (value: number) => (y = value), draw };
   };
 
+  let { page, height, getY, setY, draw } = createPage();
+  let y = getY();
+
+  const ensureSpace = (linesNeeded: number) => {
+    if (y - linesNeeded * 14 < 60) {
+      ({ page, height, getY, setY, draw } = createPage());
+      y = getY();
+    }
+  };
+
+  // Header
   page.drawText("Flowopta", {
     x: 50,
     y,
@@ -53,6 +69,7 @@ export async function generateRFPPdf(data: RFPForPdf): Promise<Uint8Array> {
   draw("RFP Requirements – Draft Document", 50, 14, true);
   y -= 24;
 
+  // Organization profile
   draw("Organization profile", 50, 12, true, PRIMARY);
   draw(`Organization: ${data.orgName}`, 50, 10);
   draw(`Contact: ${data.contactEmail}`, 50, 10);
@@ -63,26 +80,50 @@ export async function generateRFPPdf(data: RFPForPdf): Promise<Uint8Array> {
   if (data.complianceContext) draw(`Compliance: ${data.complianceContext}`, 50, 10);
   y -= 16;
 
+  // Category weights
   draw("Category weightings (1–5)", 50, 12, true, PRIMARY);
   for (const [key, value] of Object.entries(data.categoryWeights)) {
     draw(`${CATEGORY_LABELS[key as keyof CategoryWeights]}: ${value}/5`, 50, 10);
   }
   y -= 20;
 
+  // Requirements – show full AI-generated list, across pages if needed
   if (data.requirements && data.requirements.length > 0) {
-    draw("Requirements", 50, 12, true, PRIMARY);
-    for (const r of data.requirements.slice(0, 20)) {
-      const line = r.priority ? `[${r.priority}] ${r.text}` : r.text;
-      if (line.length > 70) {
-        draw(line.slice(0, 70), 50, 9);
-        draw(line.slice(70, 140) || "", 50, 9);
-      } else draw(line, 50, 9);
+    draw("AI-generated requirements (draft)", 50, 12, true, PRIMARY);
+    y -= 4;
+
+    for (const r of data.requirements) {
+      const priorityLabel = r.priority ? r.priority.toUpperCase() : "INFO";
+      const prefix = `[${priorityLabel}] [${r.category}] `;
+      const line = `${prefix}${r.text}`;
+
+      // Simple word-wrapping at ~90 chars
+      const wrapAt = 90;
+      const chunks: string[] = [];
+      let remaining = line;
+      while (remaining.length > wrapAt) {
+        const idx = remaining.lastIndexOf(" ", wrapAt);
+        const splitAt = idx > 40 ? idx : wrapAt;
+        chunks.push(remaining.slice(0, splitAt).trim());
+        remaining = remaining.slice(splitAt).trim();
+      }
+      if (remaining.length) chunks.push(remaining);
+
+      ensureSpace(chunks.length + 1);
+      for (const chunk of chunks) {
+        draw(chunk, 50, 9);
+        y = getY();
+      }
+      y -= 2;
+      setY(y);
     }
+
     y -= 16;
   }
 
+  // Footer
   draw(`Generated: ${new Date(data.createdAt).toLocaleString()}`, 50, 9);
-  draw("This is a draft for discussion. Contact Flowopta for a full RFP template.", 50, 9);
+  draw("This draft includes AI-generated requirements. For a full paid RFP engagement, contact Flowopta.", 50, 9);
 
   return doc.save();
 }
